@@ -1,0 +1,13 @@
+services:
+  vault-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - VAULT_API_KEYS=${VAULT_API_KEYS:-default-key-12345}
+    volumes:
+      - vault_data:/app/secure_storage
+      - ./vault.db:/app/vault.db
+
+volumes:
+  vault_data:

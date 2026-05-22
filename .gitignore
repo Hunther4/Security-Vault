@@ -1,0 +1,14 @@
+# Entorno virtual
+venv/
+
+# Caché y archivos de sistema
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# Archivos privados y sensibles (¡NUNCA subirlos!)
+vault.db
+master.key
+secure_storage/
+*.enc
+.env
