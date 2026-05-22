@@ -1,4 +1,4 @@
-.PHONY: build build-cli clean test serve
+.PHONY: build build-cli clean test test-go test-py serve
 
 BINARY=vault
 BUILD_DIR=bin
@@ -11,12 +11,26 @@ build-cli:
 	@echo "✅ Built $(BUILD_DIR)/$(BINARY)"
 
 clean:
-	rm -rf $(BUILD_DIR)/
+	rm -rf $(BUILD_DIR)/ dist/
 	go clean
+	rm -rf vault.db secure_storage/
 	@echo "✅ Cleaned"
 
-test:
+test: test-go test-py
+
+test-go:
 	go test ./... -v
+
+test-py:
+	. venv/bin/activate && python -m pytest portfolio_test.py -v
 
 serve:
 	$(BUILD_DIR)/vault serve
+
+release:
+	goreleaser release --clean
+
+.PHONY: lint
+lint:
+	go vet ./...
+	. venv/bin/activate && python -m py_compile api.py main.py services.py repositories.py models.py

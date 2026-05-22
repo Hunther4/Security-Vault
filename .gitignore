@@ -1,14 +1,27 @@
-# Entorno virtual
+# Python
 venv/
-
-# Caché y archivos de sistema
 __pycache__/
+*.pyc
 .pytest_cache/
-.DS_Store
 
-# Archivos privados y sensibles (¡NUNCA subirlos!)
+# Go
+bin/
+vault
+dist/
+*.exe
+
+# Vault data
 vault.db
 master.key
 secure_storage/
 *.enc
-.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

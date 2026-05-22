@@ -3,6 +3,7 @@ import re
 import uuid
 import threading
 import logging
+import shutil
 from typing import BinaryIO, Protocol, Iterator, Tuple, Optional
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import create_engine, text, MetaData
@@ -124,6 +125,9 @@ class AES256GCMChunkedProvider(ICryptoProvider):
             raise ValueError("Llave inválida. Debe ser 256-bit.")
 
     def encrypt_stream(self, header_bytes: bytes, remaining_stream: BinaryIO, output_stream: BinaryIO, max_size: int) -> int:
+        # Write version byte (v1)
+        output_stream.write(b'\x01')
+        
         total_bytes = 0
         aesgcm = AESGCM(self.key)
         def chunk_generator() -> Iterator[bytes]:
@@ -132,27 +136,63 @@ class AES256GCMChunkedProvider(ICryptoProvider):
                 chunk = remaining_stream.read(self.CHUNK_SIZE)
                 if not chunk: break
                 yield chunk
-        for chunk in chunk_generator():
+        for idx, chunk in enumerate(chunk_generator()):
             total_bytes += len(chunk)
             if total_bytes > max_size:
                 raise BufferError(f"Excede límite de {max_size} bytes.")
+            # Sequence number as AAD (4 bytes, big endian)
+            aad = idx.to_bytes(4, byteorder='big')
             nonce = os.urandom(12)
-            ciphertext = aesgcm.encrypt(nonce, chunk, None)
+            ciphertext = aesgcm.encrypt(nonce, chunk, aad)
             output_stream.write(len(ciphertext).to_bytes(4, byteorder='big'))
             output_stream.write(nonce)
             output_stream.write(ciphertext)
         return total_bytes
-
+    
     def decrypt_stream(self, input_stream: BinaryIO, output_stream: BinaryIO) -> None:
+        # Read version byte
+        version_byte = input_stream.read(1)
+        if not version_byte: return
+        
+        version = version_byte[0]
         aesgcm = AESGCM(self.key)
+        
+        # Handle v0 backward compatibility: if not \x01, it's the first byte of the first chunk length
+        if version != 1:
+            # Reconstruct the first chunk length
+            first_len_bytes = version_byte + input_stream.read(3)
+            if len(first_len_bytes) < 4: return
+            
+            chunk_size = int.from_bytes(first_len_bytes, byteorder='big')
+            nonce = input_stream.read(12)
+            ciphertext = input_stream.read(chunk_size)
+            plaintext_chunk = aesgcm.decrypt(nonce, ciphertext, None)
+            output_stream.write(plaintext_chunk)
+            
+            # Now continue with v0 (no AAD)
+            while True:
+                chunk_size_bytes = input_stream.read(4)
+                if not chunk_size_bytes: break
+                chunk_size = int.from_bytes(chunk_size_bytes, byteorder='big')
+                nonce = input_stream.read(12)
+                ciphertext = input_stream.read(chunk_size)
+                plaintext_chunk = aesgcm.decrypt(nonce, ciphertext, None)
+                output_stream.write(plaintext_chunk)
+            return
+
+        # Version 1: use sequence numbers as AAD
+        chunk_idx = 0
         while True:
             chunk_size_bytes = input_stream.read(4)
             if not chunk_size_bytes: break
             chunk_size = int.from_bytes(chunk_size_bytes, byteorder='big')
             nonce = input_stream.read(12)
             ciphertext = input_stream.read(chunk_size)
-            plaintext_chunk = aesgcm.decrypt(nonce, ciphertext, None)
+            aad = chunk_idx.to_bytes(4, byteorder='big')
+            plaintext_chunk = aesgcm.decrypt(nonce, ciphertext, aad)
             output_stream.write(plaintext_chunk)
+            chunk_idx += 1
+
 
 class LocalStorageRepository(IStorageRepository):
     _instance_lock = threading.Lock()
@@ -194,7 +234,7 @@ class LocalStorageRepository(IStorageRepository):
         # Validate path before saving
         file_path = self._validate_storage_path(file_path)
         with open(file_path, "wb") as f:
-            f.write(stream.read())
+            shutil.copyfileobj(stream, f)
         return file_path
     
     def get_encrypted_stream(self, storage_path: str) -> BinaryIO:
@@ -231,7 +271,12 @@ class SQLiteRepository(ISQLRepository):
         if engine is not None:
             self.engine = engine
         else:
-            self.engine = create_engine(db_url)
+            self.engine = create_engine(db_url, connect_args={"check_same_thread": False})
+            with self.engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.execute(text("PRAGMA busy_timeout=5000"))
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+                conn.commit()
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
     
@@ -292,7 +337,12 @@ class KeyRepository(IKeyRepository):
         if engine is not None:
             self.engine = engine
         else:
-            self.engine = create_engine(db_url)
+            self.engine = create_engine(db_url, connect_args={"check_same_thread": False})
+            with self.engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.execute(text("PRAGMA busy_timeout=5000"))
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+                conn.commit()
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
         

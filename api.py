@@ -2,44 +2,71 @@ import os
 import re
 import uuid
 import logging
+import time
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header, Request, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from datetime import datetime
 from typing import BinaryIO, Optional
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from pythonjsonlogger import jsonlogger
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Modular imports
 from models import Document, Base
 from services import VaultService
 from repositories import AES256GCMChunkedProvider, LocalStorageRepository, SQLiteRepository, KeyRepository, SecurityValidator, KeyNotFoundError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text as sa_text
 
+# ── JSON Logging ────────────────────────────────────────────────────────
+log_handler = logging.StreamHandler()
+log_handler.setFormatter(jsonlogger.JsonFormatter(
+    fmt="%(asctime)s %(name)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S%z",
+))
 logger = logging.getLogger(__name__)
+logger.addHandler(log_handler)
+logger.handlers = [log_handler]
+logger.setLevel(logging.INFO)
 
-app = FastAPI(title="Secure Vault API")
+# Silence noisy libs
+logging.getLogger("uvicorn.access").handlers = []
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
-# Configuration (In a production app, use environment variables)
+# ── App Setup ───────────────────────────────────────────────────────────
 DB_PATH = os.path.join(os.path.dirname(__file__), "vault.db")
 STORAGE_PATH = "./secure_storage"
 
 vault_api_keys = os.environ.get("VAULT_API_KEYS")
 if not vault_api_keys:
-    raise RuntimeError("CRITICAL ERROR: VAULT_API_KEYS environment variable is not set. The application cannot start without defined API keys for security reasons.")
+    raise RuntimeError("VAULT_API_KEYS environment variable is not set")
 API_KEYS = set(vault_api_keys.split(","))
 
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
-# Shared database engine — single connection pool for all repos
-_db_engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+# ── Rate Limiter ────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("vault.api.startup", extra={"event": "startup"})
+    yield
+    logger.info("vault.api.shutdown", extra={"event": "shutdown"})
+
+app = FastAPI(title="Secure Vault API", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ── Database Engine (WAL mode) ─────────────────────────────────────────
+_db_engine = create_engine(f"sqlite:///{DB_PATH}", echo=False, connect_args={"check_same_thread": False})
+with _db_engine.connect() as conn:
+    conn.execute(sa_text("PRAGMA journal_mode=WAL"))
+    conn.execute(sa_text("PRAGMA busy_timeout=5000"))
+    conn.execute(sa_text("PRAGMA synchronous=NORMAL"))
+    conn.commit()
 
 def validate_uuid(document_id: str) -> str:
     """Validate that document_id is a valid UUID format."""
@@ -74,13 +101,13 @@ def validate_filename(filename: str) -> str:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-async def validate_file_size(file: UploadFile) -> int:
+def validate_file_size(file: UploadFile) -> int:
     """Validate file size does not exceed maximum allowed size."""
     size = 0
     chunk_size = 1024 * 1024  # 1 MB chunks
     
     while True:
-        chunk = await file.read(chunk_size)
+        chunk = file.file.read(chunk_size)
         if not chunk:
             break
         size += len(chunk)
@@ -91,7 +118,7 @@ async def validate_file_size(file: UploadFile) -> int:
             )
     
     # Reset file position
-    await file.seek(0)
+    file.file.seek(0)
     return size
 
 def verify_api_key(x_api_key: Optional[str] = Header(None)) -> str:
@@ -121,7 +148,8 @@ def get_vault_service(key_repo: KeyRepository = Depends(get_key_repo)):
     return VaultService(crypto=crypto, storage=storage, sql_db=sql_db, key_repo=key_repo)
 
 @app.post("/upload")
-async def upload_document(
+@limiter.limit("20/minute")
+def upload_document(
     request: Request,
     file: UploadFile = File(...),
     actor: str = "default_user",
@@ -130,7 +158,7 @@ async def upload_document(
 ):
     try:
         # Validate file size before processing
-        file_size = await validate_file_size(file)
+        file_size = validate_file_size(file)
         logger.info(f"Upload request - filename: {file.filename}, size: {file_size} bytes, actor: {actor}")
         
         safe_actor = validate_actor(actor)
@@ -151,7 +179,8 @@ async def upload_document(
         raise HTTPException(status_code=500, detail="Internal server error during upload")
 
 @app.get("/download/{document_id}")
-async def download_document(
+@limiter.limit("30/minute")
+def download_document(
     request: Request,
     document_id: str,
     background_tasks: BackgroundTasks,
@@ -187,7 +216,9 @@ async def download_document(
         raise HTTPException(status_code=404, detail="Document not found or decryption failed")
 
 @app.get("/list")
-async def list_documents(
+@limiter.limit("30/minute")
+def list_documents(
+    request: Request,
     x_api_key: str = Depends(verify_api_key),
     service: VaultService = Depends(get_vault_service)
 ):
@@ -195,11 +226,13 @@ async def list_documents(
         docs = service.list_documents()
         return {"documents": docs}
     except Exception as e:
-        logger.error(f"List failed: {type(e).__name__}: {str(e)}")
+        logger.error("list_failed", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail="Failed to list documents")
 
 @app.post("/rotate")
-async def rotate_keys(
+@limiter.limit("10/minute")
+def rotate_keys(
+    request: Request,
     x_api_key: str = Depends(verify_api_key),
     service: VaultService = Depends(get_vault_service)
 ):
@@ -207,5 +240,32 @@ async def rotate_keys(
         result = service.rotate_key_manually()
         return result
     except Exception as e:
-        logger.error(f"Rotate failed: {type(e).__name__}: {str(e)}")
+        logger.error("rotate_failed", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail="Key rotation failed")
+
+# ── Healthcheck ──────────────────────────────────────────────────────────
+@app.get("/health")
+def healthcheck():
+    status = {"status": "ok", "version": "1.2.0"}
+    try:
+        with _db_engine.connect() as conn:
+            conn.execute(sa_text("SELECT 1"))
+        status["database"] = "connected"
+    except Exception as e:
+        status["status"] = "degraded"
+        status["database"] = f"error: {e}"
+
+    storage_ok = os.path.isdir(STORAGE_PATH) and os.access(STORAGE_PATH, os.R_OK | os.W_OK)
+    status["storage"] = "ok" if storage_ok else "unavailable"
+
+    try:
+        kr = KeyRepository(db_url=f"sqlite:///{DB_PATH}", engine=_db_engine)
+        kr.get_active_key()
+        status["crypto"] = "ok"
+    except Exception as e:
+        status["crypto"] = f"error: {e}"
+        if status["status"] == "ok":
+            status["status"] = "degraded"
+
+    status_code = 200 if status["status"] == "ok" else 503
+    return JSONResponse(content=status, status_code=status_code)
