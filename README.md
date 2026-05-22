@@ -1,128 +1,157 @@
-# 🛡️ Security Vault CLI & API
+<h1 align="center">🔐 Security Vault</h1>
 
-Sistema de gestión de archivos con encriptación de grado militar desarrollado en Python. Este proyecto permite asegurar documentos mediante algoritmos criptográficos modernos, ofreciendo una arquitectura escalable lista para integrarse como un servicio backend (API) o mediante una interfaz de línea de comandos (CLI) robusta.
+<p align="center">
+  <em>AES-256-GCM encrypted document management system</em>
+</p>
 
-## ⚠️ Estado del Proyecto
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/go-1.26-blue?logo=go" alt="Go">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/encryption-AES--256--GCM-brightgreen" alt="AES-256-GCM">
+</p>
 
-> **Versión 1.1.0** — Después de la auditoría de seguridad, todos los issues CRITICAL fueron resueltos.
+---
 
-## 🚀 Características Principales
+## ✨ Features
 
-* **Cifrado Autenticado (AES-256-GCM):** No solo garantizamos confidencialidad, sino también la **integridad** del archivo; el sistema detecta si el archivo fue modificado tras ser encriptado.
-* **Arquitectura Escalable:** Implementación del **Patrón Repositorio (Repository Pattern)**, permitiendo desacoplar la lógica de negocio de la persistencia de datos.
-* **Backend API Ready:** Diseñado con **FastAPI** para soportar operaciones remotas de subida y descarga de forma asíncrona.
-* **Eficiencia en Memoria:** Procesamiento mediante *streaming* de fragmentos (chunks) de 64KB para manejar archivos grandes sin saturar la RAM.
-* **Key Rotation Automática:** Rotación de claves cada 7 días para mantener seguridad a largo plazo.
-* **API Key Authentication:** Todas las operaciones requieren autenticación via `X-API-Key`.
+- **AES-256-GCM** chunked encryption (64KB) with unique nonce per chunk
+- **Dual interface**: Python CLI (Rich TUI) + Go CLI (cobra) + FastAPI REST API
+- **Key rotation** with full version history — old documents stay decryptable
+- **Audit logging** — every encrypt/decrypt/rotate is logged
+- **Streaming** — handles files up to 50MB without loading into RAM
+- **API key authentication** via `X-API-Key` header
+- **Path traversal prevention**, magic byte detection, filename sanitization
 
-## 🏗️ Arquitectura del Sistema
+## 📦 Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **CLI (legacy)** | Python + Rich |
+| **CLI (new)** | Go + cobra + viper |
+| **API** | FastAPI + uvicorn |
+| **Crypto** | AES-256-GCM (`cryptography` / stdlib `crypto/aes`) |
+| **Database** | SQLite + SQLAlchemy |
+| **Auth** | X-API-Key header |
+
+## 🏗 Architecture
 
 ```
-1. VALIDACIÓN    → Magic bytes detection (evita archivos maliciosos)
-2. STREAMING     → Chunks de 64KB (archivos gigabyte sin RAM overflow)
-3. CIFRADO       → AES-256-GCM (nonce único por encriptación)
-4. PERSISTENCIA  → SQLite metadatos + binario encriptado
-5. AUDITORÍA     → Log de todas las operaciones
+┌──────────┐   ┌──────────┐   ┌───────────┐
+│ Go CLI   │   │ Python   │   │ External  │
+│ (cobra)  │   │ CLI(Rich)│   │ HTTP      │
+└────┬─────┘   └────┬─────┘   └─────┬─────┘
+     │              │              │
+     └──────────────┼──────────────┘
+                    ▼
+            ┌──────────────┐
+            │   FastAPI    │
+            │   (api.py)   │
+            └──────┬───────┘
+                   │
+         ┌─────────┼─────────┐
+         │         │         │
+    ┌────▼───┐ ┌──▼───┐ ┌───▼────┐
+    │Vault   │ │Local │ │SQLite  │
+    │Service │ │Store │ │+ Audit │
+    └────────┘ └──────┘ └────────┘
 ```
 
-## 🛡️ Seguridad
+## 🚀 Quick Start
 
-| Feature | Implementación |
-|---------|----------------|
-| Cifrado | AES-256-GCM (cryptography hazmat) |
-| Auth | API Key via `X-API-Key` header |
-| Key Rotation | Automática cada 7 días |
-| Validación | UUID validation, filename sanitization, max size 50MB |
-| Permisos | master.key con permisos 0o600 |
-
-## 🛠️ Tecnologías
-
-* **Python 3.x**
-* **Criptografía:** `cryptography` (hazmat)
-* **API:** `FastAPI`
-* **Base de Datos:** `SQLite` + `SQLAlchemy`
-* **CLI:** `rich`
-
-## 📋 Instalación
+### Python API + CLI
 
 ```bash
-# Clonar el repositorio
 git clone https://github.com/Hunther4/Security-Vault.git
 cd Security-Vault
-
-# Crear y activar entorno virtual
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
-
-# Instalar dependencias
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+
+# Start the API
+./venv/bin/uvicorn api:app --port 8000
+
+# Or use the Python CLI directly
+./venv/bin/python main.py
 ```
 
-## 🚀 Cómo Usar
+### Go CLI
 
-### CLI (Línea de comandos)
 ```bash
-python3 main.py
+go build -o bin/vault ./cmd/vault
+./bin/vault --help
 ```
 
-### API Server (Servidor)
+## 📟 Go CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `vault encrypt <file>` | Encrypt and upload |
+| `vault decrypt <id>` | Download and decrypt |
+| `vault list` | List documents |
+| `vault rotate` | Rotate master key |
+| `vault serve` | Start API server |
+| `vault config init` | Create config file |
+| `vault config show` | Show config |
+
+All commands support `--json` for scripting and `--api-key` / `--api-url` flags.
+
+### JSON output example
+
 ```bash
-# Iniciar el servidor
-uvicorn api:app --host 0.0.0.0 --port 8000
-
-# Generar una API Key
-python3 -c "from main import generate_api_key; print(generate_api_key())"
+vault list --json --api-key "mykey" --api-url "http://localhost:8000"
 ```
 
-### Endpoints disponibles
+## 🐳 Docker
 
-| Método | Endpoint | Descripción |
-|--------|----------|-------------|
-| POST | `/upload` | Subir archivo encriptado |
-| GET | `/download/{document_id}` | Descargar archivo desencriptado |
-| GET | `/list` | Listar todos los documentos |
-
-**Headers requeridos para todos los endpoints:**
-```
-X-API-Key: TU_API_KEY_AQUI
+```bash
+docker-compose up -d
+# API running on http://localhost:8000
 ```
 
-## 📁 Estructura del Proyecto
+## 🔐 API Endpoints
 
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/upload` | X-API-Key | Upload & encrypt a file |
+| `GET` | `/download/{id}` | X-API-Key | Download & decrypt |
+| `GET` | `/list` | X-API-Key | List all documents |
+| `POST` | `/rotate` | X-API-Key | Rotate master key |
+
+### Upload example
+
+```bash
+curl -X POST http://localhost:8000/upload \
+  -H "X-API-Key: mykey" \
+  -F "file=@document.pdf"
 ```
-Security-Vault/
-├── api.py              # Endpoints de FastAPI
-├── main.py             # Punto de entrada CLI
-├── services.py         # Lógica de negocio
-├── repositories.py     # Acceso a datos + encriptación
-├── models.py           # Modelos de SQLAlchemy
-├── requirements.txt    # Dependencias del proyecto
-└── portfolio_test.py   # Tests unitarios
+
+## 🔑 Key Management
+
+Keys are stored in SQLite with version history:
+
+- **Auto-create** on first run (both API and CLI)
+- **Rotation** via `POST /rotate` or `vault rotate`
+- **Per-document tracking** — each document stores which key version encrypted it
+- **Old keys preserved** — decrypt always works
+
+## 🧪 Tests
+
+```bash
+# Python
+python -m pytest portfolio_test.py -v
+
+# Go
+go test ./... -v
 ```
 
-## 📝 Changelog (Historial de cambios)
+## 📦 Release (GoReleaser)
 
-### v1.1.0 (20/04/2026)
-- ✅ Añadido autenticación con API Key
-- ✅ Rotación de claves cada 7 días
-- ✅ Corregido file handle leaks
-- ✅ Corregido path traversal vulnerability
-- ✅ Añadido input validation (UUID, filename, tamaño)
-- ✅ Dependencias con versiones fijadas
-- ✅ Mejorado logging
-- ✅ Añadido test de encrypt/decrypt
+```bash
+make release
+```
 
-### v1.0.0 (15/03/2025)
-- ✅ Versión inicial
-- ✅ Encriptación AES-256-GCM
-- ✅ Integración con FastAPI
-- ✅ Interfaz CLI
+Builds for linux/darwin/windows, amd64/arm64.
 
-## ⚖️ Licencia
+## 📄 License
 
-MIT License
-
-## 👤 Autor
-
-**Drack** (anteriormente Kimetsu)
+MIT — see [LICENSE](./LICENSE).

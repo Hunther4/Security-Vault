@@ -1,5 +1,6 @@
 import os
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy import create_engine, text
@@ -149,7 +150,8 @@ def decrypt_flow(vault):
         try:
             fn, stream = vault.download_secure_document(doc_id, actor="CLI")
             path = os.path.join(dest, f"recup_{fn}")
-            with open(path, "wb") as f: f.write(stream.read())
+            with open(path, "wb") as f:
+                shutil.copyfileobj(stream, f)
             stream.close()
             console.print(Panel(f"[green]✅ {path}[/]", border_style="green"))
         except Exception as e:
