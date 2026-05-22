@@ -1,0 +1,21 @@
+# Security-Vault Dependencies
+# All dependencies are pinned to specific versions for security and reproducibility
+
+# FastAPI and related
+fastapi==0.115.0
+uvicorn==0.32.0
+python-multipart==0.0.12
+
+# Database
+sqlalchemy==2.0.36
+
+# Cryptography
+cryptography==43.0.3
+
+# CLI UI
+rich==13.9.4
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+python-dotenv==1.0.1
